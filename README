@@ -1,0 +1,9 @@
+This is a mirror of http://www.vim.org/scripts/script.php?script_id=4818
+
+Vizardry allows you to quickly search for and install vim plugins.
+
+After installing vizardry, type ":Invoke <keyword>" and vizardry will search github for vim plugins matching that keyword and ask you if you want to install one. You can start using the installed plugin immediately.
+
+You can remove plugins with ":Banish <keyword>"
+
+Find out more and get the latest version at https://github.com/ardagnir/vizardry
