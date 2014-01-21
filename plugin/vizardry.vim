@@ -24,11 +24,18 @@ if exists("g:loaded_vizardry")
 endif
 let g:loaded_vizardry = 1
 
+if !exists("g:VizardryGitMethod")
+  let g:VizardryGitMethod = "clone"
+endif
+
 command! -nargs=? Invoke call s:Invoke(<q-args>)
-command! -nargs=? Banish call s:Banish(<q-args>)
-command! -nargs=? Unbanish call s:UnbanishCommand(<q-args>)
+command! -nargs=? -complete=custom,s:ListAllInvoked Banish call s:Banish(<q-args>)
+command! -nargs=? -complete=custom,s:ListAllBanished Unbanish call s:UnbanishCommand(<q-args>)
 command! -nargs=? Scry call s:Scry(<q-args>)
-command! -nargs=? Magic call s:Magic(<q-args>)
+command! -nargs=? -complete=custom,s:ListAllInvoked Magic call s:Magic(<q-args>)
+command! -nargs=? -complete=custom,s:ListAllInvoked Magicedit call s:MagicEdit(<q-args>)
+command! -nargs=? -complete=custom,s:ListAllInvoked Magicsplit call s:MagicSplit(<q-args>)
+command! -nargs=? -complete=custom,s:ListAllInvoked Magicvsplit call s:MagicVSplit(<q-args>)
 
 function! s:Invoke(input)
   if a:input == ''
@@ -86,7 +93,7 @@ function! s:Invoke(input)
       echo 'This is the repository for banished bundle "'.matchingBundle.'"'
       echohl None
       if( s:GetResponseFromPrompt("Unbanish it? (Yes/No)", ['y', 'n']) == 'y')
-        call s:Unbanish(matchingBundle)
+        call s:Unbanish(matchingBundle, 1)
       endif
       redraw
       echo ""
@@ -104,23 +111,33 @@ endfunction
 
 function! s:UnbanishCommand(bundle)
   let niceBundle = substitute(a:bundle, '\s\s*', '', 'g')
-  if s:TestForBundle(niceBundle)
-    echo 'Bundle "'.niceBundle.'" is not banished.'
-  elseif !s:TestForBundle(niceBundle."~")
-    echo 'Bundle "'.niceBundle.'" does not exist.'
+  let matches = s:ListBanished(a:bundle)
+  if matches!=''
+    let matchList = split(matches, "\n")
+    let success=0
+    for aMatch in matchList
+      if s:Unbanish(aMatch, 0) != ''
+        echo 'Failed to unbanish "'.aMatch.'"'
+      else
+        echo "Unbanished ".aMatch
+      endif
+    endfor
+    call s:ReloadScripts()
   else
-    if s:Unbanish(niceBundle) != ''
-      echo "Failed to unbanish ".niceBundle.'"'
+    if s:ListInvoked(a:bundle)!=''
+      echo 'Bundle "'.niceBundle.'" is not banished.'
     else
-      redraw
-      echo ""
+      echo 'Bundle "'.niceBundle.'" does not exist.'
     endif
   endif
 endfunction
 
-function! s:Unbanish(bundle)
-  let ret = system('mv ~/.vim/bundle/'.a:bundle.'~ ~/.vim/bundle/'.a:bundle)
-  call s:ReloadScripts()
+function! s:Unbanish(bundle, reload)
+  let ret = system('mv '.s:bundleDir.'/'.a:bundle.'~ '.s:bundleDir.'/'.a:bundle)
+  call s:UnbanishMagic(a:bundle)
+  if a:reload
+    call s:ReloadScripts()
+  endif
   return ret
 endfunction
 
@@ -150,9 +167,14 @@ function! s:ListChoices(choices)
   let i = 0
   let ret=''
   while(i < length-1)
-    ret = ret.a:choices[i].', '
+    let ret = ret.a:choices[i].', '
+    let i+=1
   endwhile
-  return ret.', or 'a:choices[length-1]
+  return ret.'or '.a:choices[length-1]
+endfunction
+
+function! s:GrabRepository(site, name)
+  call system('cd '.s:bundleDir.' && git '.g:VizardryGitMethod.' https://github.com/'.a:site.' '.a:name)
 endfunction
 
 function! s:HandleInvokePrompt(site, description, inputNice)
@@ -161,7 +183,7 @@ function! s:HandleInvokePrompt(site, description, inputNice)
   while valid == 0
     let response = s:GetResponseFromPrompt("Found ".a:site."\n(".a:description.")\n\nClone as \"".inputNice."\"? (Yes/No/Rename)", ['y','n','r'])
     if response == 'y'
-      call system('git clone https://github.com/'.a:site.' ~/.vim/bundle/'.inputNice)
+      call s:GrabRepository(a:site, inputNice)
       call s:ReloadScripts()
       let valid=1
     elseif response == 'r'
@@ -186,7 +208,7 @@ function! s:HandleInvokePrompt(site, description, inputNice)
         redraw
         echo "Name already taken"
       else
-        call system('git clone https://github.com/'.a:site.' ~/.vim/bundle/'.newName)
+        call s:GrabRepository(a:site, newName)
         call s:ReloadScripts()
         let valid = 1
       endif
@@ -200,9 +222,9 @@ endfunction
 
 function! s:TestRepository(repository)
   redraw
-  let bundleList = split(system('ls -d ~/.vim/bundle/* 2>/dev/null | sed -nr "s,.*bundle/(.*),\1,p"'),'\n')
+  let bundleList = split(system('ls -d '.s:bundleDir.'/* 2>/dev/null | sed -n "s,.*bundle/\(.*\),\1,p"'),'\n')
   for bundle in bundleList
-    if system('cd ~/.vim/bundle/'.bundle.' && git config --get remote.origin.url') == 'https://github.com/'.a:repository."\n"
+    if system('cd '.s:bundleDir.'/'.bundle.' && git config --get remote.origin.url') == 'https://github.com/'.a:repository."\n"
       return bundle
     endif
   endfor
@@ -210,7 +232,7 @@ function! s:TestRepository(repository)
 endfunction
 
 function! s:TestForBundle(bundle)
-    return (system('ls -d ~/.vim/bundle/'.a:bundle.' >/dev/null')=='')
+    return system('ls -d '.s:bundleDir.'/'.a:bundle.' 2>/dev/null')!=''
 endfunction
 
 function! s:FormValidBundle(bundle)
@@ -231,21 +253,25 @@ function! s:Banish(input)
     return
   endif
   let inputNice = substitute(a:input, '\s\s*', '', 'g')
-  let error=system('mv ~/.vim/bundle/'.inputNice.' ~/.vim/bundle/'.inputNice.'~ >/dev/null')
-
-  if error==''
-    echo "Banished ".inputNice
-  elseif match(error, "No such file") !=-1
-    let error=system('ls ~/.vim/bundle/'.inputNice.'~ >/dev/null')
-    if error!=''
-      echo 'There is no plugin named "'.inputNice.'"'
-    else
+  let matches = s:ListInvoked(inputNice)
+  if matches == ''
+    if ListBanished(inputNice) != ''
       echo '"'.inputNice.'" has already been banished'
+    else
+      echo 'There is no plugin named "'.inputNice.'"'
     endif
   else
-    "remove trailing newline
-    let error = strpart(error, 0, strlen(error)-1)
-    echo "Error renaming file: ".error
+    let matchList = split(matches,'\n')
+    for aMatch in matchList
+      let error=system('mv '.s:bundleDir.'/'.aMatch.' '.s:bundleDir.'/'.aMatch.'~ >/dev/null')
+      call s:BanishMagic(aMatch)
+      if error==''
+        echo "Banished ".aMatch
+      else
+        let error = strpart(error, 0, strlen(error)-1)
+        echo "Error renaming file: ".error
+      endif
+    endfor
   endif
 endfunction
 
@@ -282,10 +308,30 @@ function! s:Scry(input)
   endif
 endfunction
 
+function! s:ListAllInvoked(A,L,P)
+  return s:ListInvoked('*')
+endfunction
+
+function! s:ListAllBanished(A,L,P)
+  return s:ListBanished('*')
+endfunction
+
+function! s:ListInvoked(match)
+  let invokedList = system('ls -d '.s:bundleDir.'/'.a:match.' 2>/dev/null | grep -v "~$" | sed -n "s,.*/\(.*\),\1,p"')
+  return invokedList
+endfunction
+
+function! s:ListBanished(match)
+  let banishedList = system('ls -d '.s:bundleDir.'/'.a:match.'~ 2>/dev/null | sed -n "s,.*/\(.*\)~,\1,p"')
+  return banishedList
+endfunction
+
 function! s:DisplayInvoked()
-  let invokedList = split(system('ls -d ~/.vim/bundle/*[^~] 2>/dev/null | sed -nr "s,.*bundle/(.*),\1,p"'),'\n')
+  let invokedList = split(s:ListInvoked('*'),'\n')
   if len(invokedList) == ''
+    echohl Define
     echo "No plugins invoked"
+    echohl None
   else
     echohl Define
     echo "Invoked: "
@@ -297,7 +343,7 @@ function! s:DisplayInvoked()
       endif
     endfor
     for invoked in invokedList
-      let origin = system('(cd ~/.vim/bundle/'.invoked.'&& git config --get remote.origin.url) 2>/dev/null')
+      let origin = system('(cd '.s:bundleDir.'/'.invoked.'&& git config --get remote.origin.url) 2>/dev/null')
       let origin = strpart(origin, 0, strlen(origin)-1)
       if origin==''
         echo invoked
@@ -309,9 +355,11 @@ function! s:DisplayInvoked()
 endfunction
 
 function! s:DisplayBanished()
-  let banishedList = split(system('ls -d ~/.vim/bundle/*~ 2>/dev/null | sed -nr "s,.*bundle/(.*)~,\1,p"'),'\n')
+  let banishedList = split(s:ListBanished('*'),'\n')
   if len(banishedList) == ''
+    echohl Define
     echo "No plugins banished"
+    echohl None
   else
     echohl Define
     echo "Banished: "
@@ -323,7 +371,7 @@ function! s:DisplayBanished()
       endif
     endfor
     for banished in banishedList
-      let origin = system('(cd ~/.vim/bundle/'.banished.'~ && git config --get remote.origin.url) 2>/dev/null')
+      let origin = system('(cd '.s:bundleDir.'/'.banished.'~ && git config --get remote.origin.url) 2>/dev/null')
       let origin = strpart(origin, 0, strlen(origin)-1)
       if origin==''
         echo banished
@@ -334,19 +382,20 @@ function! s:DisplayBanished()
   endif
 endfunction
 
-let s:scriptDir= expand('<sfile>:p:h')
+let s:scriptDir = expand('<sfile>:p:h')
+let s:bundleDir = substitute(s:scriptDir, '/[^/]*/[^/]*$', '', '')
 
 function! s:ReloadScripts()
   source $MYVIMRC
   let files=[]
   for plugin in split(&runtimepath,',')
-    for file in split(system ("ls ".plugin.'/plugin/*.vim 2>/dev/null'),'\n')
+    for file in split(system ("find ".plugin.'/plugin -name "*.vim" 2>/dev/null'),'\n')
       try
         exec 'silent source '.file
       catch
       endtry
     endfor
-    for file in split(system ("ls ".plugin.'/autoload/*.vim 2>/dev/null'),'\n')
+    for file in split(system ("find ".plugin.'/autoload -name "*.vim" 2>/dev/null'),'\n')
       try
         exec 'silent source '.file
       catch
@@ -355,11 +404,50 @@ function! s:ReloadScripts()
   endfor
 endfunction
 
+function! s:MagicName(plugin)
+  if a:plugin == '*'
+    return s:scriptDir.'/magic/magic.vim'
+  else
+    return s:scriptDir.'/magic/magic_'.a:plugin.'.vim'
+  endif
+endfunction
+
+function! s:BanishMagic(plugin)
+  let fileName = s:MagicName(a:plugin)
+  call system('mv '.fileName.' '.fileName.'~')
+endfunction
+
+function! s:UnbanishMagic(plugin)
+  let fileName = s:MagicName(a:plugin)
+  call system('mv '.fileName.'~ '.fileName)
+endfunction
+
 function! s:Magic(incantation)
+  let incantationList = split(a:incantation, ' ')
+  if len(incantationList) == 0
+    echo "No plugin given"
+    return
+  endif
+  let plugin = incantationList[0]
+  let incantation = join(incantationList[1:],' ')
+
   try
-    exec a:incantation
-    call system('cat >> '.s:scriptDir.'/magic.vim', a:incantation."\n")
+    exec incantation
+    call system('mkdir '.s:scriptDir.'/magic')
+    call system('cat >> '.s:MagicName(plugin), incantation."\n")
   endtry
+endfunction
+
+function! s:MagicEdit(incantation)
+  exec "edit" s:MagicName(a:incantation)."*"
+endfunction
+
+function! s:MagicSplit(incantation)
+  exec "split" s:MagicName(a:incantation)."*"
+endfunction
+
+function! s:MagicVSplit(incantation)
+  exec "vsplit ".s:MagicName(a:incantation)."*"
 endfunction
 
 let &cpo = g:save_cpo
